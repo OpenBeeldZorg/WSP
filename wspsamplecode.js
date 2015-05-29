@@ -1,9 +1,14 @@
 // This code illustrates the setup of a WebRTC call using WSP
 // This code is only intended for illustration purposes
 // It lacks details like exception and error handling
-// In practice this code should run partly on the server and partly on the client.
-// The WSP protocol must be used between the servers of the caller and the server of the callee
-// For the communication between the server and the client any protocol could be used.
+// Normally all WSP signaling is going from the client sotware of the caller
+//   to the server software of the caller
+//   and from there to the server software of the callee
+//   which forwards most commands to the client software of the callee
+//   and vice versa.
+// To clarify the main structure of the WSP protocol we don't make a distinction
+// between the client and the server software in this sample software.
+// For the communication between the client and the server any protocol could be used.
 // If none has been established yet, ik makes sense of course to use the same WSP mechanism here as well.
 // This sample code does not show this communication between the server and the client though
 
@@ -18,17 +23,15 @@ var invitation = {
 	}
 };
 
-var webSocket, rtcPeerConnection, dataChannel, transferred;
+var rtcPeerConnection, dataChannel;
 var localMediaStream, remoteMediaStream;
 
-transferred = false; // will become true once the WebRTC DataChannel takes over the signaling role from the WebSocket
-
-// Initialize WebSocket for the initial signalling
-var webSocket = new WebSocket('wss://hiswspserver.com/wsp','wsp-1.0');
-webSocket.onmessage = handleWebSocketMessage;
+var transferred = false; // will become true once the WebRTC DataChannel takes over the signaling role from the WebSocket
 
 // Initialize WebRTC for a direct connection between caller and callee.
-var rtcPeerConnection = new RTCPeerConnection({iceServers: [{"url":"stun:stun.l.google.com:19302"}]});
+// the same code is used for the caller and the callee
+rtcPeerConnection = new RTCPeerConnection({iceServers: [{"url":"stun:stun.l.google.com:19302"}]});
+// and define the appropriate event handlers, to be specified later
 rtcPeerConnection.onicecandidate = handleRTCPeerConnectionIceCandidate;
 rtcPeerConnection.onaddstream = handleRTCPeerConnectionAddStream;
 rtcPeerConnection.ondataChannel = handleRTCPeerConnectionDataChannel;
@@ -40,24 +43,23 @@ getUserMedia({video: true, audio: true}, function(mediaStream) {
 	// ToDo: display mediaStream in local video element
 });
 
+// The caller starts by creating a websocket connection to the callee
+var webSocket = new WebSocket('wss://hiswspserver.com/wsp','wsp-1.0');
 
-// In this example we presume that both the caller and the callee have a websocket to their own servers.
-//     the caller has a websocket connection to mywspserver.com
-//     the callee has a websocket connection to hiswspserver.com
+// At the callee's end a listener should pickup the websocket connection
+// This is typically handled by the callee's server and outside the scope of this sample
 
-// The caller starts by sending an 'invite' signal to mywspserver.com.
+// Then the caller sends an 'invite' signal to the callee
 webSocket.send(JSON.Stringify(['invite' , invitation]));
 
-// mywspserver.com interprets the invitation and creates a connection to hiswspserver.com.
-// hiswspserver.com receives the invitation from mywspserver.com.
-// hiswspserver.com sends a 'ringing' signal to the callee.
 
 // Both the caller and callee handle their signals the same way.
+webSocket.onmessage = handleWebSocketMessage;
 function handleWebSocketMessage(event){
 	handleWspMessage(JSON.parse(event.data));
 }
 
-// Each signal has a keyword, content and options.
+// Each signal has a keyword, content and options (content and options might be empty).
 // In this example we will handle each signal keyword in a separate function.
 function handleWspMessage(msg)
 	var keyword = msg[0];
@@ -85,43 +87,60 @@ function handleWspMessage(msg)
 	}
 }
 
-// HACK: This function is handled by the server.
-function handleSignalInvite(invitation) {
+// The next step is that the invite is received by the callee.
+// Notice again that this is typically handled by the server
+// The server checks if the callee is online and forwards the invite to the proper client.
+// The code is this sample picks up things from there
+function handleSignalInvite(invitation){
+
 	// ToDo: inform user that a call was received, based on the info in invitation
+
+	// inform the caller that callee's phone is ringing
 	webSocket.send(JSON.stringify(['ringing']));
+
+	// Once the call is accepted continue with creating a WebRTC DataChannel
+	dataChannel = rtcPeerConnection.createDataChannel('wsp');
+	// and create the offer and set the local description accordingly
+	rtcPeerConnection.createOffer(handleOfferCreated);
+
+	function handleOfferCreated(offer) {
+		rtcPeerConnection.setLocalDescription(offer, handleLocalDescriptionSet);
+
+		function handleLocalDescriptionSet() {
+			// once all of that has been done, send the offer to the caller
+			webSocket.send(JSON.Stringify([ 'offer' , offer]));
+		}
+
+	}
 }
 
-// The callee receives a 'ringing' signal from hiswspserver.com.
-// In this example we will automatically accept all calls,
-// whereas most applications will play a ringing sound and allow the user (callee) to accept the call manually.
-// Calls are accepted by first creating a WebRTC offer.
+// Back at the caller's you may inform the user of the callee's phone actually ringing
 function handleSignalRinging() {
 	// ToDo: tell the caller the bell is ringing at the callee...
-
-	dataChannel = rtcPeerConnection.createDataChannel('wsp');
-	rtcPeerConnection.createOffer(handleOfferCreated);
 }
 
-// Once the offer is created, the callee sends the offer back to the caller.
-function handleOfferCreated(offer) {
-	rtcPeerConnection.setLocalDescription(offer, function() {
-		webSocket.send(JSON.Stringify(['offer' , offer]));
-	});
-}
+// And when the offer is received by the caller
+// configure its WebRTC connection accordingly
+function handleSignalOffer(offer){
+	rtcPeerConnection.setRemoteDescription(new RTCSessionDescription(offer), handleRemotedescriptionSet);
 
-// The offer is received by the caller; the caller creates an answer.
-function handleSignalOffer(offer) {
-	rtcPeerConnection.setRemoteDescription(new RTCSessionDescription(offer), function() {
+	function handleRemotedescriptionSet() {
+		// when that is ready, create the answer
 		rtcPeerConnection.createAnswer(handleAnswerCreated);
-	});
-}
+	}
 
-// Once the answer is created, the caller sends the answer back to the callee.
-function handleAnswerCreated(answer) {
-	rtcPeerConnection.setLocalDescription(new RTCSessionDescription(answer), function() {
-		webSocket.send(JSON.Stringify(['answer' , answer]));
-	});
-}
+	function handleAnswerCreated(answer) {
+		// set the localdescription accordingly
+		rtcPeerConnection.setLocalDescription(new RTCSessionDescription(answer), handleLocalDescriptionSet);
+
+		function handleLocalDescriptionSet() {
+			// and when all of that has been done, send the answer to the callee
+			webSocket.send(JSON.Stringify([ 'answer' , answer]));
+		}
+
+	}
+
+};
 
 // The callee receives the answer and configures its WebRTC connection with it.
 // This will trigger WebRTC of the caller and the callee to attempt to connect to eachother directly.
@@ -131,7 +150,7 @@ function handleSignalAnswer(answer){
 
 // While attempting to connect directly over WebRTC, icecandidates are generated.
 // Each icecandidate is a possible way to get a direct connection, so
-// each one is send to other other side (both for caller and callee).
+// each one is send to the other end (both for caller and callee).
 function handleRTCPeerConnectionIceCandidate(event) {
 	if (event.candidate){
 		if(!transferred){
@@ -142,7 +161,7 @@ function handleRTCPeerConnectionIceCandidate(event) {
 	}
 }
 
-// When icecandidates are received over the signalling socket, we add it to the WebRTC connection.
+// When icecandidates are received at the other end over the signalling socket, we add it to the WebRTC connection.
 function handleSignalIceCandidate(candidate) {
 	rtcPeerConnection.addIceCandidate(new RTCIceCandidate(candidate));
 }
@@ -164,15 +183,16 @@ function handleRTCPeerConnectionDataChannel(event) {
 }
 
 // Once the datachannel is fully established, we will no longer need the websocket for signalling.
-// We send a 'bye' signal with code 101, instructing the other side to transfer signalling over to its datachannel.
+// We send a 'bye' signal with code 101, instructing the other end to transfer signalling over to its datachannel.
 // We also transfer our signalling to the datachannel: further signals will be send through the datachannel.
+// Notice that we cannot close the websocket yet, since there might still be messages in the pipeline
 function handleDataChannelOpen(){
 	webSocket.send(JSON.stringify(['bye',{code: 101, description: 'Transferred'}]));
 	transferred = true;
 }
 
 // The other end will get signalled that the signals are from now on send through the datachannel (reason.code === 101).
-// For this case we can close the websocket and use the datachannel for sending further signals.
+// We can now close the websocket and use the datachannel for sending further signals.
 // The 'bye' signal is also used to end the call. So, for any other reason we will close all connections and stop the camera.
 function handleSignalBye(reason){
 	if(reason.code === 101){
@@ -190,19 +210,19 @@ function handleSignalBye(reason){
 	}
 }
 
-// Now, messages that are received on the datachannel are handled in the same way as messages we received on the websocket.
+// Now, messages received on the datachannel are handled in the same way as messages received on the websocket.
 function handleDataChannelMessage(event) {
 	handleWspMessage(JSON.parse(event.data));
 }
 
+// At this time we can do all signalling over WebRTC without using the websocket connection.
+// So in a client/server environment, also the server is not involved in the signaling anymore.
 
-// At this time we can do all signalling over WebRTC without using the websocket connections of either the caller nor the callee.
-
-// We can stop the call by sending the 'bye' signal.
+// We can end the call by sending the 'bye/200' signal.
 if(!transferred){
 	webSocket.send(JSON.Stringify(['bye', {code: 200, description: 'User ended call normally'}]);
 } else {
 	dataChannel.send(JSON.Stringify(['bye', {code: 200, description: 'User ended call normally'}]);
 }
 
-// The other side will receive the 'bye' signal and closes all of its connections.
+// The other end will receive the 'bye' signal and closes all of its connections as shown before.
