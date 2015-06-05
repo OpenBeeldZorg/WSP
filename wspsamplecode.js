@@ -12,6 +12,11 @@
 // If none has been established yet, ik makes sense of course to use the same WSP mechanism here as well.
 // This sample code does not show this communication between the server and the client though
 
+// Remarks
+// Code intended for caller only
+// Code intended for callee only
+// Code intended for both caller and callee
+
 var invitation = {
 	caller: {
 		uri: 'alice@mywspserver.com',
@@ -19,7 +24,7 @@ var invitation = {
 	},
 	callee: {
 		uri: 'bob@hiswspserver.com',
-		name: 'Bob'		// optional
+		name: 'Bob'	// optional
 	}
 };
 
@@ -37,11 +42,13 @@ rtcPeerConnection.onaddstream = handleRTCPeerConnectionAddStream;
 rtcPeerConnection.ondataChannel = handleRTCPeerConnectionDataChannel;
 
 // Setup local camera and microphone
-getUserMedia({video: true, audio: true}, function(mediaStream) {
+getUserMedia({audio: true, video: true}, handleGotUsermedia);
+
+function handleGotUsermedia(mediaStream) {
 	rtcPeerConnection.addStream(mediaStream);
-	localMediaStream = mediaStream;	
-	// ToDo: display mediaStream in local video element
-});
+localMediaStream = mediaStream;
+// ToDo: display mediaStream in local video element
+}
 
 // The caller starts by creating a websocket connection to the callee
 var webSocket = new WebSocket('wss://hiswspserver.com/wsp','wsp-1.0');
@@ -55,6 +62,7 @@ webSocket.send(JSON.Stringify(['invite' , invitation]));
 
 // Both the caller and callee handle their signals the same way.
 webSocket.onmessage = handleWebSocketMessage;
+
 function handleWebSocketMessage(event){
 	handleWspMessage(JSON.parse(event.data));
 }
@@ -66,16 +74,16 @@ function handleWspMessage(msg)
 	var content = msg[1];
 	var options = msg[2];	// not currently used
 	switch (keyword) {
-		case 'invite': handleSignalInvite(content);		// only relevant for callee
+		case 'invite': handleSignalInvite(content);	// only relevant for callee
 			// notice this should (primarily) be handled by the server
 			// the server then checks if the callee is online
 			// and notifies the appropriate client of an incoming call
 			break;
-		case 'ringing': handleSignalRinging();			// only relevant for caller
+		case 'ringing': handleSignalRinging();		// only relevant for caller
 			break;
 		case 'offer': handleSignalOffer(content);		// only relevant for caller
 			break;
-		case 'answer': handleSignalAnswer(content);		// only relevant for callee
+		case 'answer': handleSignalAnswer(content);	// only relevant for callee
 			break;
 		case 'icecandidate': handleSignalIceCandidate(content);
 			break;
@@ -100,6 +108,10 @@ function handleSignalInvite(invitation){
 
 	// Once the call is accepted continue with creating a WebRTC DataChannel
 	dataChannel = rtcPeerConnection.createDataChannel('wsp');
+	// and set the appropriate events on it
+dataChannel.onopen = handleDataChannelOpen;
+	dataChannel.onmessage = handleDataChannelMessage;
+
 	// and create the offer and set the local description accordingly
 	rtcPeerConnection.createOffer(handleOfferCreated);
 
@@ -114,7 +126,7 @@ function handleSignalInvite(invitation){
 	}
 }
 
-// Back at the caller's you may inform the user of the callee's phone actually ringing
+// Back at the caller's end you may inform the user of the callee's phone actually ringing
 function handleSignalRinging() {
 	// ToDo: tell the caller the bell is ringing at the callee...
 }
@@ -122,7 +134,10 @@ function handleSignalRinging() {
 // And when the offer is received by the caller
 // configure its WebRTC connection accordingly
 function handleSignalOffer(offer){
-	rtcPeerConnection.setRemoteDescription(new RTCSessionDescription(offer), handleRemotedescriptionSet);
+rtcPeerConnection.setRemoteDescription(
+new RTCSessionDescription(offer),
+handleRemotedescriptionSet
+);
 
 	function handleRemotedescriptionSet() {
 		// when that is ready, create the answer
@@ -131,7 +146,10 @@ function handleSignalOffer(offer){
 
 	function handleAnswerCreated(answer) {
 		// set the localdescription accordingly
-		rtcPeerConnection.setLocalDescription(new RTCSessionDescription(answer), handleLocalDescriptionSet);
+rtcPeerConnection.setLocalDescription(
+new RTCSessionDescription(answer),
+handleLocalDescriptionSet
+);
 
 		function handleLocalDescriptionSet() {
 			// and when all of that has been done, send the answer to the callee
@@ -196,14 +214,13 @@ function handleDataChannelOpen(){
 // The 'bye' signal is also used to end the call. So, for any other reason we will close all connections and stop the camera.
 function handleSignalBye(reason){
 	if(reason.code === 101){
-		// the signaling has been taken over by the WebSocket Data Channel, so the websocket can be closed
+// the signaling has been taken over by the WebSocket Data Channel,
+transferred = true;
+// and the websocket can be closed
 		webSocket.close();
 	} else {
-		if(!tranferred){
-			webSocket.close();
-		} else {
-			dataChannel.close();
-		}
+		webSocket.close();	// if not closed already
+		dataChannel.close();	// if not closed already
 		localMediaStream.stop();
 		remoteMediaStream.stop();
 		// ToDo: inform the user the call has ended
